@@ -15,11 +15,13 @@ Fusesource and doesn't yet have committed test coverage.
 ## TODO
 
 Remaining work prior to the Alpha release:
+
 0. Maven deployment for fusesource JNI RocksDB bindings.
 1. Add test coverage.
-2. Add RocksDB-specific bindings.
-3. Add API's for RocksDB-specific features.
+2. Add API's for RocksDB-specific features.
+3. Add benchmarks.
 4. Readme and rationale.
+5. Move caching protocol into separate namespace (or project).
 
 ## Shameless Plug
 
