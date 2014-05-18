@@ -26,27 +26,13 @@
    (rdb/put! db \"foo\" \"bar\")
    (rdb/get db \"foo\")
 
-   ;; Memoization (from clojure.core.memoize):
-   (def id (rdb/memo #(do (Thread/sleep 5000) (identity %))))
-   (id 42)
-   ;; ... waits 5 seconds
-   ;; => 42
-
-    (id 42)
-    ;; instantly
-    ;: => 42
-
-   For more examples see the test/flausenhaus/rocksdb.clj."
+   For more examples see the test/org/flausenhaus/test/rocksdb.clj."
   (:refer-clojure :exclude [get])
   (:require
-   [clojure.core.cache :as cache]
-   [clojure.core.memoize :as memo]
    [me.raynes.fs :as fs]
    [taoensso.nippy :as nippy]
    [clojure.java.io :as io])
   (:import
-   [clojure.core.memoize
-    PluggableMemoization]
    [java.io
     File
     Closeable]
@@ -65,14 +51,14 @@
     WriteOptions
     WriteBatch]))
 
-(set! *warn-on-reflection* true)
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Serialization and Sequence Utilities=
 
 ;; By default, we use nippy for serialization.
 (def ^:dynamic *serializer* nippy/freeze)
 (def ^:dynamic *deserializer* nippy/thaw)
+
+;; TODO (Buro): Make
 
 (defmacro with-serializer
   "Evaluates a body using the provided serializer."
@@ -109,7 +95,7 @@
 (extend-protocol IByteSerializable
   nil
   (serialize [_] (*serializer* nil))
-  (deserialize [_] (*deserializer* nil))
+  (deserialize [_] nil)
 
   java.lang.Object
   (serialize [obj] (*serializer* obj))
@@ -259,9 +245,12 @@
     (get this key nil))
   (get [this key default]
     (let [key (serialize key)
-          val (deserialize (if read-options
-                             (.get store key read-options)
-                             (.get store key)))]
+          val (deserialize (try
+                             (if read-options
+                               (.get store key read-options)
+                               (.get store key))
+                             (catch NullPointerException e
+                               nil)))]
       (if val val default)))
   (snapshot [this]
     this)
@@ -319,9 +308,12 @@
     (get this key nil))
   (get [this key default]
     (let [key (serialize key)
-          val (deserialize (if read-options
-                             (.get store key read-options)
-                             (.get store key)))]
+          val (deserialize (try
+                             (if read-options
+                               (.get store key read-options)
+                               (.get store key))
+                             (catch NullPointerException e
+                               nil)))]
       (if val val default)))
 
   IPersistentKVWrite
@@ -365,7 +357,7 @@
   (close [this]
     (.close store))
 
-  ;; TODO: Move into separate cache..
+  ;; TODO (Buro): Actually make this countable.
   clojure.lang.Counted
   (count [this]
     (->> this
@@ -378,6 +370,7 @@
 
   clojure.lang.Seqable
   (seq [this]
+    ;; TODO (Buro): Actually make this seq-able.
     (for [[k v] (iterator this nil nil)]
       (clojure.lang.MapEntry. (deserialize k) (deserialize v))))
 
@@ -389,59 +382,7 @@
       val
       not-found)))
 
-;; TODO: Add test examples.
-(deftype RocksDBCache [db]
-  cache/CacheProtocol
-  (lookup [this item]
-    (delay
-     (try
-       (get db item)
-       (catch java.lang.NullPointerException e
-         nil))))
-  (lookup [this item not-found]
-    (delay
-     (try
-       (get db item not-found)
-       (catch java.lang.NullPointerException e
-         nil))))
-  (has? [this item]
-    (try
-      (get db item)
-      (catch java.lang.NullPointerException e
-        nil)))
-  (hit [this item]
-    (RocksDBCache. db))
-  (miss [this item result]
-    (put! db item @result)
-    (RocksDBCache. db))
-  (evict [this key]
-    (delete! db key)
-    (RocksDBCache. db))
-  (seed [this base]
-    (when base
-      (put-all! db base))
-    (RocksDBCache. db))
-
-  clojure.lang.Counted
-  (count [this]
-    (count db))
-
-  clojure.lang.Seqable
-  (seq [this]
-    (seq db))
-
-  clojure.lang.ILookup
-  (valAt [this key]
-    (get db key nil))
-  (valAt [this key not-found]
-    (if-let [val (get db key nil)]
-      val
-      not-found))
-
-  java.lang.Object
-  (toString [this]
-    (str db)))
-
+;; TODO (Buro): Add more options http://godoc.org/github.com/alberts/gorocks
 (def ^:private option-setters
   {:create-if-missing? #(.createIfMissing ^Options %1 %2)
    :error-if-exists?   #(.errorIfExists ^Options %1 %2)
@@ -458,62 +399,35 @@
 (defn mk-RocksDB
   "Creates a closeable database object, which takes a directory and zero or
    more options and implements both IPersistentKVRead and IPersistentKVWrite."
-  ([]
-     (mk-RocksDB {} (fs/temp-dir "rocks-db")))
-  ([options]
-     (mk-RocksDB options (fs/temp-dir "rocks-db")))
-  ([{:keys [create-if-missing?
-            error-if-exists?
-            write-buffer-size
-            block-size
-            max-open-files
-            cache-size
-            comparator
-            compress?
-            paranoid-checks?
-            block-restart-interval
-            logger]
-     :or {compress? true
-          cache-size (* 32 1024 1024)
-          block-size (* 16 1024)
-          write-buffer-size (* 32 1024 1024)
-          create-if-missing? true
-          error-if-exists? false}
-     :as options}
-    directory]
-     (let [handle (io/file directory)]
-       (->RocksDB
-        (.open JniDBFactory/factory
-               handle
-               (let [opts (Options.)]
-                 (doseq [[k v] options]
-                   (when (and v (contains? option-setters k))
-                     ((option-setters k) opts v)))
-                 opts))
-        (ReadOptions.)
-        (WriteOptions.)
-        handle))))
-
-(defn cache-factory
-  "Returns a RocksDB-backed persistent-cache satisfying
-  core.cache/CacheProtocol."
-  ([]
-     (cache-factory {}))
-  ([init-kvs]
-     (cache/seed (mk-RocksDB) {})))
-
-(comment
-  (def db (mk-RocksDB {}))
-  (put! db "foo" "bar")
-  (get db "foo")
-  (put! db nippy/stress-data nippy/stress-data)
-  (prn (get db nippy/stress-data)))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;; Memoization.
-
-(defn memo
-  "Given a function f, returns a memoized version backed by RocksDB."
-  [f]
-  (memo/build-memoizer
-   #(clojure.core.memoize.PluggableMemoization. %1 (cache-factory)) f))
+  [& {:keys [create-if-missing?
+             error-if-exists?
+             write-buffer-size
+             block-size
+             max-open-files
+             cache-size
+             comparator
+             compress?
+             paranoid-checks?
+             block-restart-interval
+             logger
+             directory]
+      :or {compress? true
+           cache-size (* 32 1024 1024)
+           block-size (* 16 1024)
+           write-buffer-size (* 32 1024 1024)
+           create-if-missing? true
+           error-if-exists? false
+           directory (fs/temp-dir "rocks-db")}
+      :as options}]
+  (let [handle (io/file directory)]
+    (->RocksDB
+     (.open JniDBFactory/factory
+            handle
+            (let [opts (Options.)]
+              (doseq [[k v] options]
+                (when (and v (contains? option-setters k))
+                  ((option-setters k) opts v)))
+              opts))
+     (ReadOptions.)
+     (WriteOptions.)
+     handle)))
