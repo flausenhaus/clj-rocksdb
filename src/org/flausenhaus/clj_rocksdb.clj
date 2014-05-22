@@ -38,18 +38,21 @@
     Closeable]
    [java.util
     Arrays]
-   [org.fusesource.rocksdbjni
-    JniDBFactory]
-   [org.iq80.leveldb
-    CompressionType
-    DB
-    DBFactory
-    DBIterator
+   [org.rocksdb.util
+    Environment]
+   [org.rocksdb
+    BackupableDB
+    BackupableDBOptions
     Options
-    Range
     ReadOptions
-    WriteOptions
-    WriteBatch]))
+    RocksDB
+    RocksDBException
+    RocksIterator
+    Statistics
+    WriteBatch
+    WriteOptions]))
+
+;;(RocksDB/open (.setCreateIfMissing (Options.) true) "/tmp/rocksdb/")
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Serialization and Sequence Utilities=
@@ -57,8 +60,6 @@
 ;; By default, we use nippy for serialization.
 (def ^:dynamic *serializer* nippy/freeze)
 (def ^:dynamic *deserializer* nippy/thaw)
-
-;; TODO (Buro): Make
 
 (defmacro with-serializer
   "Evaluates a body using the provided serializer."
@@ -153,8 +154,8 @@
   (java.util.Arrays/equals x y))
 
 (defn- iterator-seq-
-  "Creates a closeable iterator a DBIterator given and start and end keys."
-  [^DBIterator iterator start end]
+  "Creates a closeable iterator a RocksIterator given and start and end keys."
+  [^RocksIterator iterator start end]
   (when start
     (.seek iterator (serialize start))
     (.seekToFirst iterator))
@@ -171,19 +172,6 @@
 ;;; RocksDB bindings: an overall protocol capturing the API for simple
 ;;; kv-datstore with mutable state.
 
-(defprotocol IPersistentKVFactory
-  "An interface for creating to a persistent key-value datastore with mutable
-  state. To prevent resource leakage, any type implementing IPersistentKVWrite
-  should also implement java.lang.Closeable.
-
-  TODO: Add more documentation here about the argument types."
-  (open [this file-handle options]
-    "Opens a DB at the specified file handle and returns kv-datastore.")
-  (destroy [this file-handle options]
-    "Destroys DB at file-handle.")
-  (repair [this file-handle options]
-    "Attempts to reconstruct DB from file"))
-
 (defprotocol IPersistentKVRead
   "An interface for reading a persistent key-value datastore with mutable
   state. To prevent resource leakage, any type implementing IPersistentKVRead
@@ -193,16 +181,15 @@
   (iterator [this] [this start] [this start end]
     "Returns a CloseableSeq of map entries ranging from start to
     end. Automagically closes when exhausted.")
-  (snapshot [this]
-    "Returns a snapshot of the database that can be read and iterated
-    over. This needs to be closed explicitly.")
   (stats [this property]
     "Returns statistics for the database.")
   (bounds [this]
     "Returns a tuple of the lower and upper keys in the database or snapshot.")
   (get [this key] [this key default]
     "Returns the value of key. If the key doesn't exist, returns default or
-    nil."))
+    nil.")
+  (multi-get [this keys]
+    "Returns the map of key-values."))
 
 (defprotocol IPersistentKVWrite
   "An interface for writing to a persistent key-value datastore with mutable
@@ -221,49 +208,16 @@
     "Put a key-value pair.")
   (put-all! [this kvs]
     "(Batch) put a map of key-value pairs atomically.")
-  (delete! [this key] [this key value]
+  (remove! [this key] [this key value]
     "Delete a key. Optionally, given a value, only delete if retieved value is equal.")
-  (delete-all! [this]
+  (remove-all! [this]
     "Delete all entries."))
 
-(deftype Snapshot [^DB store ^ReadOptions read-options]
-  IPersistentKVRead
-  (iterator [this]
-    (iterator this nil nil))
-  (iterator [this start]
-    (iterator this start nil))
-  (iterator [this start end]
-    (if read-options
-      (iterator-seq- (.iterator store read-options) start end)
-      (iterator-seq- (.iterator store) start end)))
-  (bounds [this]
-    (with-open [^DBIterator iterator (.iterator store read-options)]
-      (when (.hasNext (doto iterator .seekToFirst))
-        [(-> (doto iterator .seekToFirst) .peekNext key deserialize)
-         (-> (doto iterator .seekToLast) .peekNext key deserialize)])))
-  (get [this key]
-    (get this key nil))
-  (get [this key default]
-    (let [key (serialize key)
-          val (deserialize (try
-                             (if read-options
-                               (.get store key read-options)
-                               (.get store key))
-                             (catch NullPointerException e
-                               nil)))]
-      (if val val default)))
-  (snapshot [this]
-    this)
-
-  java.io.Closeable
-  (close [this]
-    (-> read-options .snapshot .close)))
-
-(deftype Batch [^DB store ^WriteBatch batch ^WriteOptions write-options]
+(deftype Batch [^RocksDB store ^WriteBatch batch ^WriteOptions write-options]
   IPersistentKVWrite
   (put! [this key value]
     (.put batch (serialize key) (serialize value)))
-  (delete! [this key]
+  (remove! [this key]
     (.delete batch (serialize key)))
   (batch [this]
     this)
@@ -277,16 +231,11 @@
       (.write store batch))
     (.close batch)))
 
-(deftype RocksDB [^DB store ^ReadOptions read-options ^WriteOptions write-options ^File file]
-  ;; TODO: Actually test this factory bit out.
-  IPersistentKVFactory
-  (open [this file-handle options]
-    (assert false "Not used yet.")
-    (.open JniDBFactory/factory file (Options.)))
-  (destroy [this file-handle options]
-    (.destroy JniDBFactory/factory file (Options.)))
-  (repair [this file-handle options]
-    (.repair JniDBFactory/factory file (Options.)))
+(deftype RocksDBStore [^RocksDB store
+                       ^Options options
+                       ^ReadOptions read-options
+                       ^WriteOptions write-options
+                       ^File file]
 
   IPersistentKVRead
   (iterator [this]
@@ -295,8 +244,6 @@
     (iterator this start nil))
   (iterator [this start end]
     (iterator-seq- (.iterator store) start end))
-  (snapshot [this]
-    (->Snapshot this (doto (ReadOptions.) (.snapshot (.getSnapshot store)))))
   (stats [this property]
     (.getProperty store "rockdb.stats"))
   (bounds [this]
@@ -419,6 +366,7 @@
            error-if-exists? false
            directory (fs/temp-dir "rocks-db")}
       :as options}]
+  (RocksDB/loadLibrary)
   (let [handle (io/file directory)]
     (->RocksDB
      (.open JniDBFactory/factory

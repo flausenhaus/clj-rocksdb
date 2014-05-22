@@ -3,8 +3,7 @@
   several properties of a key-value store.
   TODO (Buro): Finish this documentation.
       0. Roundtrip identity properties for serialization.
-      1. Idempotent
-"
+      1. Idempotent"
   (:require
    [clojure.test :refer [deftest]]
    [clojure.test.check :as check]
