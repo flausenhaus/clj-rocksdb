@@ -10,24 +10,19 @@ equally applicable to that project and are largely a refactoring of Factual's
 
 This is currently an early-commit, work-in-progress, so don't use this
 yet. This project relies on a locally-bulit OS X binary of RocksDBJNI from
-Fusesource and doesn't yet have committed test coverage.
+Fusesouce.
 
 ## TODO
 
 Remaining work prior to the Alpha release:
 
-0. Maven deployment for fusesource JNI RocksDB bindings.
-1. Add test coverage.
+0. Maven deployment for fusesource JNI RocksDB bindings -> migrate to
+   Facebook's RocksDB Java bindings.
+1. Add test coverage -> focused generative testing via test.check.
 2. Add API's for RocksDB-specific features.
-3. Add benchmarks.
+3. Add benchmarks -> FB benchmarks, but additional benchmarks and graphs under
+   typical server traffic considerations.
 4. Readme and rationale.
-5. Move caching protocol into separate namespace (or project).
-
-## Shameless Plug
-
-If you want deterministic seeks in a log-structured, embedded kv-store and
-don't want to use ERLANG, checkout
-[bjitcask](https://github.com/DnAGreenberg/bjitcask).
 
 ## License
 
