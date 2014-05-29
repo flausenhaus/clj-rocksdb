@@ -10,15 +10,13 @@
    [org.flausenhaus.clj_rocksdb
     Batch
     CloseableSeq
-    RocksDB
-    Snapshot]))
+    RocksDB]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Demo tests to demonstrate properties and usage
 
 (def ^:private db (rdb/mk-RocksDB))
 (expect (more-> RocksDB identity
-                Snapshot rdb/snapshot
                 Batch rdb/batch)
         db)
 (expect true (from-each [protocol [rdb/IPersistentKVFactory

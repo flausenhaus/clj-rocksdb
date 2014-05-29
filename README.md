@@ -6,6 +6,14 @@ LevelDB. LevelDB and RocksDB share the same interface, so the bindings here
 equally applicable to that project and are largely a refactoring of Factual's
 [clj-leveldb](https://github.com/Factual/clj-leveldb).
 
+## Installation
+
+Add the following to the `:dependencies` section of your `project.clj` file:
+
+```clj
+[org.flausenhaus/clj-rocksdb "0.1.0-SNAPSHOT"]
+```
+
 ## Usage
 
 This is currently an early-commit, work-in-progress, so don't use this
